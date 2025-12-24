@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Retro Pac-Man",
+  "description": "A classic Pac-Man clone featuring smooth 60fps gameplay, intelligent ghost behavior, and AI-powered strategy advice powered by Gemini.",
+  "requestFramePermissions": []
+}
