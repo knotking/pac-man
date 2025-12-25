@@ -7,7 +7,9 @@ import {
   Position, 
   Entity, 
   Ghost, 
-  GameState 
+  GameState,
+  SoundProfile,
+  MusicTrack
 } from './types';
 import { 
   MAZE_LAYOUT, 
@@ -33,14 +35,19 @@ const App: React.FC = () => {
   const [aiMessage, setAiMessage] = useState<string>("READY PLAYER ONE?");
   const [tipMessage, setTipMessage] = useState<string>("USE ARROW KEYS TO MOVE.");
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
+  
+  // Audio UI state
+  const [sfxEnabled, setSfxEnabled] = useState(true);
+  const [musicEnabled, setMusicEnabled] = useState(true);
+  const [audioProfile, setAudioProfile] = useState<SoundProfile>(SoundProfile.CLASSIC);
+  const [musicTrack, setMusicTrack] = useState<MusicTrack>(MusicTrack.DRONE);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pacmanRef = useRef<Entity>({
     pos: { x: 13.5 * TILE_SIZE, y: 23 * TILE_SIZE },
     dir: Direction.NONE,
     nextDir: Direction.NONE,
-    speed: 2.2 // Slightly faster for responsiveness
+    speed: 2.2 
   });
 
   const ghostsRef = useRef<Ghost[]>([]);
@@ -104,11 +111,31 @@ const App: React.FC = () => {
     });
   }, [resetEntities]);
 
-  const toggleMute = () => {
-    const newMute = !isMuted;
-    setIsMuted(newMute);
-    audioService.setMute(newMute);
-    if (!newMute && gameState.status === GameStatus.PLAYING) {
+  // Audio Control Handlers
+  const handleToggleSfx = () => {
+    const next = !sfxEnabled;
+    setSfxEnabled(next);
+    audioService.setSfxEnabled(next);
+  };
+
+  const handleToggleMusic = () => {
+    const next = !musicEnabled;
+    setMusicEnabled(next);
+    audioService.setMusicEnabled(next);
+    if (next && gameState.status === GameStatus.PLAYING) {
+      audioService.startBackgroundMusic(gameState.powerTimer > 0);
+    }
+  };
+
+  const handleChangeProfile = (p: SoundProfile) => {
+    setAudioProfile(p);
+    audioService.setProfile(p);
+  };
+
+  const handleChangeTrack = (t: MusicTrack) => {
+    setMusicTrack(t);
+    audioService.setTrack(t);
+    if (musicEnabled && gameState.status === GameStatus.PLAYING) {
       audioService.startBackgroundMusic(gameState.powerTimer > 0);
     }
   };
@@ -146,11 +173,8 @@ const App: React.FC = () => {
     if (dir === Direction.DOWN) next.y += speed;
     if (dir === Direction.LEFT) next.x -= speed;
     if (dir === Direction.RIGHT) next.x += speed;
-
-    // Wrap around for tunnels
     if (next.x < 0) next.x = (GRID_WIDTH - 1) * TILE_SIZE;
     if (next.x > (GRID_WIDTH - 1) * TILE_SIZE) next.x = 0;
-
     return next;
   };
 
@@ -161,14 +185,12 @@ const App: React.FC = () => {
     if (dir === Direction.DOWN) testPoints.push({ x: pos.x + padding, y: pos.y + TILE_SIZE }, { x: pos.x + TILE_SIZE - padding, y: pos.y + TILE_SIZE });
     if (dir === Direction.LEFT) testPoints.push({ x: pos.x - 1, y: pos.y + padding }, { x: pos.x - 1, y: pos.y + TILE_SIZE - padding });
     if (dir === Direction.RIGHT) testPoints.push({ x: pos.x + TILE_SIZE, y: pos.y + padding }, { x: pos.x + TILE_SIZE, y: pos.y + TILE_SIZE - padding });
-
     return testPoints.some(p => isWall(p.x, p.y));
   };
 
   const update = () => {
     if (gameState.status !== GameStatus.PLAYING) return;
 
-    // Update Pac-man
     const pac = pacmanRef.current;
     if (pac.nextDir !== Direction.NONE && !checkCollision(pac.pos, pac.nextDir)) {
       pac.dir = pac.nextDir;
@@ -176,17 +198,13 @@ const App: React.FC = () => {
 
     if (!checkCollision(pac.pos, pac.dir)) {
       pac.pos = getNextPos(pac.pos, pac.dir, pac.speed);
-      
-      // Sound logic for movement
       if (pac.dir !== Direction.NONE && wakaCooldownRef.current <= 0) {
         audioService.playWaka();
-        wakaCooldownRef.current = 15; // frames
+        wakaCooldownRef.current = 15; 
       }
     }
-    
     if (wakaCooldownRef.current > 0) wakaCooldownRef.current--;
 
-    // Eat pellets
     const gridX = Math.floor((pac.pos.x + TILE_SIZE / 2) / TILE_SIZE);
     const gridY = Math.floor((pac.pos.y + TILE_SIZE / 2) / TILE_SIZE);
     if (gridY < 0 || gridY >= GRID_HEIGHT || gridX < 0 || gridX >= GRID_WIDTH) return;
@@ -195,7 +213,6 @@ const App: React.FC = () => {
 
     if (tile === TileType.PELLET || tile === TileType.POWER_PELLET) {
       mazeRef.current[gridY][gridX] = TileType.EMPTY;
-      
       if (tile === TileType.POWER_PELLET) {
         audioService.playPowerPellet();
         audioService.startBackgroundMusic(true);
@@ -203,16 +220,11 @@ const App: React.FC = () => {
 
       setGameState(prev => {
         const newScore = prev.score + (tile === TileType.PELLET ? 10 : 50);
-        // Scaled power pellet duration
         const duration = Math.max(120, POWER_PELLET_DURATION - (prev.level - 1) * 60);
         const newPowerTimer = tile === TileType.POWER_PELLET ? duration : Math.max(0, prev.powerTimer - 1);
-        
         if (tile === TileType.POWER_PELLET) {
-          ghostsRef.current.forEach(g => {
-            if (!g.isEaten) g.isFrightened = true;
-          });
+          ghostsRef.current.forEach(g => { if (!g.isEaten) g.isFrightened = true; });
         }
-        
         return { ...prev, score: newScore, powerTimer: newPowerTimer };
       });
     } else {
@@ -226,7 +238,6 @@ const App: React.FC = () => {
       });
     }
 
-    // Update Ghosts
     ghostsRef.current.forEach(ghost => {
       if (!checkCollision(ghost.pos, ghost.dir) && Math.random() > 0.05) {
         ghost.pos = getNextPos(ghost.pos, ghost.dir, ghost.isFrightened ? ghost.speed * 0.5 : ghost.speed);
@@ -248,9 +259,7 @@ const App: React.FC = () => {
           setGameState(prev => {
             if (prev.lives > 1) {
               resetEntities(prev.level);
-              setTimeout(() => {
-                if (gameState.status === GameStatus.PLAYING) audioService.startBackgroundMusic();
-              }, 1500);
+              setTimeout(() => { if (gameState.status === GameStatus.PLAYING) audioService.startBackgroundMusic(); }, 1500);
               return { ...prev, lives: prev.lives - 1 };
             } else {
               fetchCommentary(prev.score, prev.level, 'GAME_OVER');
@@ -261,15 +270,11 @@ const App: React.FC = () => {
       }
     });
 
-    // Level Clear condition
     const pelletsCount = mazeRef.current.flat().filter(t => t === TileType.PELLET || t === TileType.POWER_PELLET).length;
     if (pelletsCount === 0) {
       audioService.stopBackgroundMusic();
       setGameState(prev => ({ ...prev, status: GameStatus.WON }));
-      // Small delay before next level
-      setTimeout(() => {
-        startNextLevel();
-      }, 2000);
+      setTimeout(() => { startNextLevel(); }, 2000);
     }
   };
 
@@ -333,19 +338,16 @@ const App: React.FC = () => {
   }, [gameState.powerTimer]);
 
   useEffect(() => {
-    const loop = () => {
-      update();
-      draw();
-      frameId.current = requestAnimationFrame(loop);
-    };
+    const loop = () => { update(); draw(); frameId.current = requestAnimationFrame(loop); };
     frameId.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frameId.current);
-  }, [gameState.status, draw, gameState.level]); // Added level dependency to loop if needed
+  }, [gameState.status, draw, gameState.level]);
 
   return (
     <div className="min-h-screen bg-black flex flex-col items-center justify-center p-4 text-white font-['Press_Start_2P']" onKeyDown={handleKeyDown} tabIndex={0}>
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-8 items-start">
         
+        {/* Left Column: Stats & Audio Toggles */}
         <div className="flex flex-col gap-6 order-2 lg:order-1">
           <div className="retro-border p-4 bg-gray-900 rounded-lg text-center">
             <h2 className="text-yellow-400 text-sm mb-4">LEVEL</h2>
@@ -356,15 +358,24 @@ const App: React.FC = () => {
             <p className="text-2xl">{gameState.score.toString().padStart(6, '0')}</p>
           </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-red-500 text-sm mb-4 flex justify-between items-center">
-              LIVES
+            <h2 className="text-red-500 text-sm mb-4">AUDIO MIXER</h2>
+            <div className="flex flex-col gap-3">
               <button 
-                onClick={toggleMute} 
-                className={`text-[10px] px-2 py-1 rounded border ${isMuted ? 'bg-red-900 border-red-500' : 'bg-gray-800 border-gray-500'}`}
+                onClick={handleToggleSfx} 
+                className={`text-[10px] p-2 rounded border transition-colors ${sfxEnabled ? 'bg-green-900 border-green-500' : 'bg-red-900 border-red-500'}`}
               >
-                {isMuted ? '🔇 MUTE' : '🔊 AUDIO'}
+                SFX: {sfxEnabled ? 'ON' : 'OFF'}
               </button>
-            </h2>
+              <button 
+                onClick={handleToggleMusic} 
+                className={`text-[10px] p-2 rounded border transition-colors ${musicEnabled ? 'bg-green-900 border-green-500' : 'bg-red-900 border-red-500'}`}
+              >
+                MUSIC: {musicEnabled ? 'ON' : 'OFF'}
+              </button>
+            </div>
+          </div>
+          <div className="retro-border p-4 bg-gray-900 rounded-lg">
+            <h2 className="text-red-500 text-sm mb-4">LIVES</h2>
             <div className="flex gap-2">
               {Array.from({ length: gameState.lives }).map((_, i) => (
                 <div key={i} className="w-6 h-6 bg-yellow-400 rounded-full"></div>
@@ -373,24 +384,15 @@ const App: React.FC = () => {
           </div>
         </div>
 
+        {/* Center Column: Game */}
         <div className="flex flex-col items-center order-1 lg:order-2">
           <h1 className="text-3xl text-yellow-400 mb-6 drop-shadow-[0_0_10px_rgba(255,255,0,0.8)]">PAC-MAN</h1>
           <div className="relative retro-border overflow-hidden rounded-md bg-black shadow-2xl">
-            <canvas
-              ref={canvasRef}
-              width={GRID_WIDTH * TILE_SIZE}
-              height={GRID_HEIGHT * TILE_SIZE}
-              className="max-w-full h-auto"
-            />
+            <canvas ref={canvasRef} width={GRID_WIDTH * TILE_SIZE} height={GRID_HEIGHT * TILE_SIZE} className="max-w-full h-auto" />
             {gameState.status === GameStatus.IDLE && (
               <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center">
-                <p className="mb-8 text-yellow-400 animate-pulse">CLICK TO START</p>
-                <button 
-                  onClick={startGame}
-                  className="bg-yellow-400 text-black px-8 py-4 hover:bg-yellow-300 active:translate-y-1 transition-all"
-                >
-                  START GAME
-                </button>
+                <p className="mb-8 text-yellow-400 animate-pulse text-xs">CLICK TO START GAME</p>
+                <button onClick={startGame} className="bg-yellow-400 text-black px-8 py-4 hover:bg-yellow-300 active:translate-y-1 transition-all">START GAME</button>
               </div>
             )}
             {gameState.status === GameStatus.WON && (
@@ -402,48 +404,47 @@ const App: React.FC = () => {
             {gameState.status === GameStatus.GAME_OVER && (
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-8 text-center">
                 <p className="text-2xl mb-4 text-red-500">GAME OVER</p>
-                <p className="text-xs mb-8 leading-relaxed text-gray-400 max-w-xs mx-auto">{isAiLoading ? "..." : aiMessage}</p>
-                <button 
-                  onClick={startGame}
-                  className="bg-yellow-400 text-black px-8 py-4 hover:bg-yellow-300"
-                >
-                  REPLAY
-                </button>
+                <p className="text-[10px] mb-8 leading-relaxed text-gray-400 max-w-xs mx-auto">{isAiLoading ? "..." : aiMessage}</p>
+                <button onClick={startGame} className="bg-yellow-400 text-black px-8 py-4 hover:bg-yellow-300">REPLAY</button>
               </div>
             )}
           </div>
         </div>
 
+        {/* Right Column: AI & Sound Picker */}
         <div className="flex flex-col gap-6 order-3">
-          <div className="retro-border p-4 bg-gray-900 rounded-lg flex-1">
-            <h2 className="text-cyan-400 text-sm mb-4">PRO TIPS</h2>
-            <div className="border-l-4 border-cyan-400 pl-4 py-2">
-              <p className="text-[10px] leading-6 text-gray-300">
-                {tipMessage}
-              </p>
+          <div className="retro-border p-4 bg-gray-900 rounded-lg">
+            <h2 className="text-cyan-400 text-sm mb-4 uppercase">Sound Profile</h2>
+            <div className="grid grid-cols-1 gap-2">
+              {[SoundProfile.CLASSIC, SoundProfile.SMOOTH, SoundProfile.AGGRESSIVE].map(p => (
+                <button 
+                  key={p} 
+                  onClick={() => handleChangeProfile(p)}
+                  className={`text-[8px] p-2 border ${audioProfile === p ? 'bg-cyan-900 border-cyan-400 text-white' : 'border-gray-600 text-gray-500'}`}
+                >
+                  {p}
+                </button>
+              ))}
             </div>
           </div>
-          <div className="retro-border p-4 bg-gray-900 rounded-lg flex-1">
-            <h2 className="text-pink-400 text-sm mb-4">GEMINI COMMS</h2>
-            <p className="text-[10px] leading-6 text-pink-200">
-              {aiMessage}
-            </p>
+          <div className="retro-border p-4 bg-gray-900 rounded-lg">
+            <h2 className="text-pink-400 text-sm mb-4 uppercase">Background Tune</h2>
+            <div className="grid grid-cols-1 gap-2">
+              {[MusicTrack.DRONE, MusicTrack.PULSE, MusicTrack.CHASE].map(t => (
+                <button 
+                  key={t} 
+                  onClick={() => handleChangeTrack(t)}
+                  className={`text-[8px] p-2 border ${musicTrack === t ? 'bg-pink-900 border-pink-400 text-white' : 'border-gray-600 text-gray-500'}`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="text-[8px] text-gray-600 text-center mt-4">
-            &copy; 1980 GEMINI NAMCO CLONE<br/>
-            ALL RIGHTS RESERVED
+          <div className="retro-border p-4 bg-gray-900 rounded-lg">
+            <h2 className="text-white text-sm mb-4">GEMINI COMMS</h2>
+            <p className="text-[10px] leading-6 text-pink-200">{aiMessage}</p>
           </div>
-        </div>
-      </div>
-
-      <div className="fixed bottom-4 left-0 right-0 lg:hidden flex justify-center gap-4 px-4 opacity-50 hover:opacity-100 transition-opacity">
-        <div className="grid grid-cols-3 gap-2">
-          <div />
-          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.UP}>↑</button>
-          <div />
-          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.LEFT}>←</button>
-          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.DOWN}>↓</button>
-          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.RIGHT}>→</button>
         </div>
       </div>
     </div>

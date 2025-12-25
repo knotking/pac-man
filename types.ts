@@ -23,6 +23,18 @@ export enum TileType {
   GHOST_HOUSE = 4
 }
 
+export enum SoundProfile {
+  CLASSIC = 'CLASSIC',
+  SMOOTH = 'SMOOTH',
+  AGGRESSIVE = 'AGGRESSIVE'
+}
+
+export enum MusicTrack {
+  DRONE = 'DRONE',
+  PULSE = 'PULSE',
+  CHASE = 'CHASE'
+}
+
 export interface Position {
   x: number;
   y: number;
