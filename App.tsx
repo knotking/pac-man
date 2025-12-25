@@ -40,40 +40,36 @@ const App: React.FC = () => {
     pos: { x: 13.5 * TILE_SIZE, y: 23 * TILE_SIZE },
     dir: Direction.NONE,
     nextDir: Direction.NONE,
-    speed: 2
+    speed: 2.2 // Slightly faster for responsiveness
   });
 
-  const ghostsRef = useRef<Ghost[]>(GHOST_DATA.map(g => ({
-    ...g,
-    pos: { x: g.startPos.x * TILE_SIZE, y: g.startPos.y * TILE_SIZE },
-    dir: Direction.UP,
-    nextDir: Direction.NONE,
-    speed: 1.5,
-    isFrightened: false,
-    isEaten: false
-  })));
-
+  const ghostsRef = useRef<Ghost[]>([]);
   const mazeRef = useRef<number[][]>(MAZE_LAYOUT.map(row => [...row]));
   const frameId = useRef<number>(0);
   const wakaCooldownRef = useRef<number>(0);
 
-  const resetEntities = useCallback(() => {
-    pacmanRef.current = {
-      pos: { x: 13.5 * TILE_SIZE, y: 23 * TILE_SIZE },
-      dir: Direction.NONE,
-      nextDir: Direction.NONE,
-      speed: 2
-    };
+  const initGhosts = useCallback((level: number) => {
+    const speed = 1.5 + (level - 1) * 0.2;
     ghostsRef.current = GHOST_DATA.map(g => ({
       ...g,
       pos: { x: g.startPos.x * TILE_SIZE, y: g.startPos.y * TILE_SIZE },
       dir: Direction.UP,
       nextDir: Direction.NONE,
-      speed: 1.5,
+      speed: speed,
       isFrightened: false,
       isEaten: false
     }));
   }, []);
+
+  const resetEntities = useCallback((level: number) => {
+    pacmanRef.current = {
+      pos: { x: 13.5 * TILE_SIZE, y: 23 * TILE_SIZE },
+      dir: Direction.NONE,
+      nextDir: Direction.NONE,
+      speed: 2.2
+    };
+    initGhosts(level);
+  }, [initGhosts]);
 
   const startGame = () => {
     mazeRef.current = MAZE_LAYOUT.map(row => [...row]);
@@ -84,12 +80,29 @@ const App: React.FC = () => {
       status: GameStatus.PLAYING,
       powerTimer: 0
     });
-    resetEntities();
+    resetEntities(1);
     fetchNewTip();
     setAiMessage("WAKA WAKA WAKA!");
     audioService.playStartFanfare();
     audioService.startBackgroundMusic();
   };
+
+  const startNextLevel = useCallback(() => {
+    setGameState(prev => {
+      const nextLevel = prev.level + 1;
+      mazeRef.current = MAZE_LAYOUT.map(row => [...row]);
+      resetEntities(nextLevel);
+      audioService.playStartFanfare();
+      audioService.startBackgroundMusic();
+      setAiMessage(`LEVEL ${nextLevel} - FASTER GHOSTS!`);
+      return { 
+        ...prev, 
+        level: nextLevel, 
+        status: GameStatus.PLAYING,
+        powerTimer: 0 
+      };
+    });
+  }, [resetEntities]);
 
   const toggleMute = () => {
     const newMute = !isMuted;
@@ -190,7 +203,9 @@ const App: React.FC = () => {
 
       setGameState(prev => {
         const newScore = prev.score + (tile === TileType.PELLET ? 10 : 50);
-        const newPowerTimer = tile === TileType.POWER_PELLET ? POWER_PELLET_DURATION : Math.max(0, prev.powerTimer - 1);
+        // Scaled power pellet duration
+        const duration = Math.max(120, POWER_PELLET_DURATION - (prev.level - 1) * 60);
+        const newPowerTimer = tile === TileType.POWER_PELLET ? duration : Math.max(0, prev.powerTimer - 1);
         
         if (tile === TileType.POWER_PELLET) {
           ghostsRef.current.forEach(g => {
@@ -205,6 +220,7 @@ const App: React.FC = () => {
         const nextPowerTimer = Math.max(0, prev.powerTimer - 1);
         if (prev.powerTimer > 0 && nextPowerTimer === 0) {
           audioService.startBackgroundMusic(false);
+          ghostsRef.current.forEach(g => { g.isFrightened = false; g.isEaten = false; });
         }
         return { ...prev, powerTimer: nextPowerTimer };
       });
@@ -231,8 +247,7 @@ const App: React.FC = () => {
           audioService.stopBackgroundMusic();
           setGameState(prev => {
             if (prev.lives > 1) {
-              resetEntities();
-              // Small delay or reset logic could be here
+              resetEntities(prev.level);
               setTimeout(() => {
                 if (gameState.status === GameStatus.PLAYING) audioService.startBackgroundMusic();
               }, 1500);
@@ -246,13 +261,15 @@ const App: React.FC = () => {
       }
     });
 
+    // Level Clear condition
     const pelletsCount = mazeRef.current.flat().filter(t => t === TileType.PELLET || t === TileType.POWER_PELLET).length;
     if (pelletsCount === 0) {
       audioService.stopBackgroundMusic();
-      setGameState(prev => {
-        fetchCommentary(prev.score, prev.level, 'WON');
-        return { ...prev, status: GameStatus.WON };
-      });
+      setGameState(prev => ({ ...prev, status: GameStatus.WON }));
+      // Small delay before next level
+      setTimeout(() => {
+        startNextLevel();
+      }, 2000);
     }
   };
 
@@ -323,13 +340,17 @@ const App: React.FC = () => {
     };
     frameId.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frameId.current);
-  }, [gameState.status, draw]);
+  }, [gameState.status, draw, gameState.level]); // Added level dependency to loop if needed
 
   return (
     <div className="min-h-screen bg-black flex flex-col items-center justify-center p-4 text-white font-['Press_Start_2P']" onKeyDown={handleKeyDown} tabIndex={0}>
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-8 items-start">
         
         <div className="flex flex-col gap-6 order-2 lg:order-1">
+          <div className="retro-border p-4 bg-gray-900 rounded-lg text-center">
+            <h2 className="text-yellow-400 text-sm mb-4">LEVEL</h2>
+            <p className="text-3xl text-white">{gameState.level}</p>
+          </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
             <h2 className="text-yellow-400 text-sm mb-4">SCORE</h2>
             <p className="text-2xl">{gameState.score.toString().padStart(6, '0')}</p>
@@ -349,10 +370,6 @@ const App: React.FC = () => {
                 <div key={i} className="w-6 h-6 bg-yellow-400 rounded-full"></div>
               ))}
             </div>
-          </div>
-          <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-blue-400 text-sm mb-4">STATUS</h2>
-            <p className="text-xs leading-relaxed">{gameState.status}</p>
           </div>
         </div>
 
@@ -376,11 +393,15 @@ const App: React.FC = () => {
                 </button>
               </div>
             )}
-            {(gameState.status === GameStatus.GAME_OVER || gameState.status === GameStatus.WON) && (
+            {gameState.status === GameStatus.WON && (
+              <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center p-8 text-center">
+                <p className="text-2xl mb-4 text-green-500 animate-bounce">LEVEL CLEAR!</p>
+                <p className="text-xs text-white">GET READY FOR LEVEL {gameState.level + 1}</p>
+              </div>
+            )}
+            {gameState.status === GameStatus.GAME_OVER && (
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-8 text-center">
-                <p className={`text-2xl mb-4 ${gameState.status === GameStatus.WON ? 'text-green-500' : 'text-red-500'}`}>
-                  {gameState.status === GameStatus.WON ? 'YOU WIN!' : 'GAME OVER'}
-                </p>
+                <p className="text-2xl mb-4 text-red-500">GAME OVER</p>
                 <p className="text-xs mb-8 leading-relaxed text-gray-400 max-w-xs mx-auto">{isAiLoading ? "..." : aiMessage}</p>
                 <button 
                   onClick={startGame}
