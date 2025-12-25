@@ -19,6 +19,7 @@ import {
   POWER_PELLET_DURATION
 } from './constants';
 import { getGameCommentary, getStrategyTip } from './services/geminiService';
+import { audioService } from './services/audioService';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>({
@@ -32,6 +33,7 @@ const App: React.FC = () => {
   const [aiMessage, setAiMessage] = useState<string>("READY PLAYER ONE?");
   const [tipMessage, setTipMessage] = useState<string>("USE ARROW KEYS TO MOVE.");
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pacmanRef = useRef<Entity>({
@@ -53,6 +55,7 @@ const App: React.FC = () => {
 
   const mazeRef = useRef<number[][]>(MAZE_LAYOUT.map(row => [...row]));
   const frameId = useRef<number>(0);
+  const wakaCooldownRef = useRef<number>(0);
 
   const resetEntities = useCallback(() => {
     pacmanRef.current = {
@@ -84,6 +87,17 @@ const App: React.FC = () => {
     resetEntities();
     fetchNewTip();
     setAiMessage("WAKA WAKA WAKA!");
+    audioService.playStartFanfare();
+    audioService.startBackgroundMusic();
+  };
+
+  const toggleMute = () => {
+    const newMute = !isMuted;
+    setIsMuted(newMute);
+    audioService.setMute(newMute);
+    if (!newMute && gameState.status === GameStatus.PLAYING) {
+      audioService.startBackgroundMusic(gameState.powerTimer > 0);
+    }
   };
 
   const fetchNewTip = async () => {
@@ -128,7 +142,7 @@ const App: React.FC = () => {
   };
 
   const checkCollision = (pos: Position, dir: Direction): boolean => {
-    const padding = Math.ceil(TILE_SIZE / 8); // Scaled tolerance for wall collision
+    const padding = Math.ceil(TILE_SIZE / 8); 
     const testPoints = [];
     if (dir === Direction.UP) testPoints.push({ x: pos.x + padding, y: pos.y - 1 }, { x: pos.x + TILE_SIZE - padding, y: pos.y - 1 });
     if (dir === Direction.DOWN) testPoints.push({ x: pos.x + padding, y: pos.y + TILE_SIZE }, { x: pos.x + TILE_SIZE - padding, y: pos.y + TILE_SIZE });
@@ -149,7 +163,15 @@ const App: React.FC = () => {
 
     if (!checkCollision(pac.pos, pac.dir)) {
       pac.pos = getNextPos(pac.pos, pac.dir, pac.speed);
+      
+      // Sound logic for movement
+      if (pac.dir !== Direction.NONE && wakaCooldownRef.current <= 0) {
+        audioService.playWaka();
+        wakaCooldownRef.current = 15; // frames
+      }
     }
+    
+    if (wakaCooldownRef.current > 0) wakaCooldownRef.current--;
 
     // Eat pellets
     const gridX = Math.floor((pac.pos.x + TILE_SIZE / 2) / TILE_SIZE);
@@ -160,6 +182,12 @@ const App: React.FC = () => {
 
     if (tile === TileType.PELLET || tile === TileType.POWER_PELLET) {
       mazeRef.current[gridY][gridX] = TileType.EMPTY;
+      
+      if (tile === TileType.POWER_PELLET) {
+        audioService.playPowerPellet();
+        audioService.startBackgroundMusic(true);
+      }
+
       setGameState(prev => {
         const newScore = prev.score + (tile === TileType.PELLET ? 10 : 50);
         const newPowerTimer = tile === TileType.POWER_PELLET ? POWER_PELLET_DURATION : Math.max(0, prev.powerTimer - 1);
@@ -173,17 +201,17 @@ const App: React.FC = () => {
         return { ...prev, score: newScore, powerTimer: newPowerTimer };
       });
     } else {
-      setGameState(prev => ({ ...prev, powerTimer: Math.max(0, prev.powerTimer - 1) }));
-    }
-
-    // Power Timer handling (visual logic)
-    if (gameState.powerTimer === 0) {
-      ghostsRef.current.forEach(g => { g.isFrightened = false; g.isEaten = false; });
+      setGameState(prev => {
+        const nextPowerTimer = Math.max(0, prev.powerTimer - 1);
+        if (prev.powerTimer > 0 && nextPowerTimer === 0) {
+          audioService.startBackgroundMusic(false);
+        }
+        return { ...prev, powerTimer: nextPowerTimer };
+      });
     }
 
     // Update Ghosts
     ghostsRef.current.forEach(ghost => {
-      // Simple random movement logic for this demo
       if (!checkCollision(ghost.pos, ghost.dir) && Math.random() > 0.05) {
         ghost.pos = getNextPos(ghost.pos, ghost.dir, ghost.isFrightened ? ghost.speed * 0.5 : ghost.speed);
       } else {
@@ -192,17 +220,22 @@ const App: React.FC = () => {
         ghost.dir = validDirs[Math.floor(Math.random() * validDirs.length)] || Direction.NONE;
       }
 
-      // Hit Pacman
       const dist = Math.sqrt(Math.pow(pac.pos.x - ghost.pos.x, 2) + Math.pow(pac.pos.y - ghost.pos.y, 2));
       if (dist < TILE_SIZE * 0.8) {
         if (ghost.isFrightened && !ghost.isEaten) {
           ghost.isEaten = true;
+          audioService.playGhostEaten();
           setGameState(prev => ({ ...prev, score: prev.score + 200 }));
         } else if (!ghost.isEaten) {
-          // Die
+          audioService.playDeath();
+          audioService.stopBackgroundMusic();
           setGameState(prev => {
             if (prev.lives > 1) {
               resetEntities();
+              // Small delay or reset logic could be here
+              setTimeout(() => {
+                if (gameState.status === GameStatus.PLAYING) audioService.startBackgroundMusic();
+              }, 1500);
               return { ...prev, lives: prev.lives - 1 };
             } else {
               fetchCommentary(prev.score, prev.level, 'GAME_OVER');
@@ -213,9 +246,9 @@ const App: React.FC = () => {
       }
     });
 
-    // Win condition: no pellets left
     const pelletsCount = mazeRef.current.flat().filter(t => t === TileType.PELLET || t === TileType.POWER_PELLET).length;
     if (pelletsCount === 0) {
+      audioService.stopBackgroundMusic();
       setGameState(prev => {
         fetchCommentary(prev.score, prev.level, 'WON');
         return { ...prev, status: GameStatus.WON };
@@ -232,7 +265,6 @@ const App: React.FC = () => {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw Maze
     mazeRef.current.forEach((row, y) => {
       row.forEach((tile, x) => {
         if (tile === TileType.WALL) {
@@ -254,30 +286,19 @@ const App: React.FC = () => {
       });
     });
 
-    // Draw Pacman
     const pac = pacmanRef.current;
     ctx.fillStyle = '#ffff00';
     ctx.beginPath();
     let startAngle = 0.2 * Math.PI;
     let endAngle = 1.8 * Math.PI;
-    
-    // Rotation based on direction
     if (pac.dir === Direction.UP) { startAngle = 1.7 * Math.PI; endAngle = 1.3 * Math.PI; }
     if (pac.dir === Direction.DOWN) { startAngle = 0.7 * Math.PI; endAngle = 0.3 * Math.PI; }
     if (pac.dir === Direction.LEFT) { startAngle = 1.2 * Math.PI; endAngle = 0.8 * Math.PI; }
-
     const mouthOpen = (Math.sin(Date.now() / 50) + 1) / 2;
-    ctx.arc(
-      pac.pos.x + TILE_SIZE / 2, 
-      pac.pos.y + TILE_SIZE / 2, 
-      TILE_SIZE / 2 - 2, 
-      startAngle * mouthOpen, 
-      endAngle + (2 * Math.PI - endAngle) * (1 - mouthOpen)
-    );
+    ctx.arc(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2, TILE_SIZE / 2 - 2, startAngle * mouthOpen, endAngle + (2 * Math.PI - endAngle) * (1 - mouthOpen));
     ctx.lineTo(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2);
     ctx.fill();
 
-    // Draw Ghosts
     ghostsRef.current.forEach(ghost => {
       if (ghost.isEaten) return;
       ctx.fillStyle = ghost.isFrightened ? '#2121ff' : ghost.color;
@@ -286,8 +307,6 @@ const App: React.FC = () => {
       ctx.lineTo(ghost.pos.x + TILE_SIZE - 2, ghost.pos.y + TILE_SIZE - 2);
       ctx.lineTo(ghost.pos.x + 2, ghost.pos.y + TILE_SIZE - 2);
       ctx.fill();
-      
-      // Eyes
       ctx.fillStyle = '#fff';
       ctx.beginPath();
       ctx.arc(ghost.pos.x + TILE_SIZE * 0.3, ghost.pos.y + TILE_SIZE * 0.3, 3, 0, Math.PI * 2);
@@ -310,14 +329,21 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-black flex flex-col items-center justify-center p-4 text-white font-['Press_Start_2P']" onKeyDown={handleKeyDown} tabIndex={0}>
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-8 items-start">
         
-        {/* Left Column: Stats */}
         <div className="flex flex-col gap-6 order-2 lg:order-1">
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
             <h2 className="text-yellow-400 text-sm mb-4">SCORE</h2>
             <p className="text-2xl">{gameState.score.toString().padStart(6, '0')}</p>
           </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-red-500 text-sm mb-4">LIVES</h2>
+            <h2 className="text-red-500 text-sm mb-4 flex justify-between items-center">
+              LIVES
+              <button 
+                onClick={toggleMute} 
+                className={`text-[10px] px-2 py-1 rounded border ${isMuted ? 'bg-red-900 border-red-500' : 'bg-gray-800 border-gray-500'}`}
+              >
+                {isMuted ? '🔇 MUTE' : '🔊 AUDIO'}
+              </button>
+            </h2>
             <div className="flex gap-2">
               {Array.from({ length: gameState.lives }).map((_, i) => (
                 <div key={i} className="w-6 h-6 bg-yellow-400 rounded-full"></div>
@@ -330,7 +356,6 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Center Column: Game Board */}
         <div className="flex flex-col items-center order-1 lg:order-2">
           <h1 className="text-3xl text-yellow-400 mb-6 drop-shadow-[0_0_10px_rgba(255,255,0,0.8)]">PAC-MAN</h1>
           <div className="relative retro-border overflow-hidden rounded-md bg-black shadow-2xl">
@@ -342,7 +367,7 @@ const App: React.FC = () => {
             />
             {gameState.status === GameStatus.IDLE && (
               <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center">
-                <p className="mb-8 text-yellow-400 animate-pulse">PRESS START TO PLAY</p>
+                <p className="mb-8 text-yellow-400 animate-pulse">CLICK TO START</p>
                 <button 
                   onClick={startGame}
                   className="bg-yellow-400 text-black px-8 py-4 hover:bg-yellow-300 active:translate-y-1 transition-all"
@@ -368,7 +393,6 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Column: AI & Tips */}
         <div className="flex flex-col gap-6 order-3">
           <div className="retro-border p-4 bg-gray-900 rounded-lg flex-1">
             <h2 className="text-cyan-400 text-sm mb-4">PRO TIPS</h2>
@@ -391,27 +415,14 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Mobile Controls Overlay */}
       <div className="fixed bottom-4 left-0 right-0 lg:hidden flex justify-center gap-4 px-4 opacity-50 hover:opacity-100 transition-opacity">
         <div className="grid grid-cols-3 gap-2">
           <div />
-          <button 
-            className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center"
-            onTouchStart={() => pacmanRef.current.nextDir = Direction.UP}
-          >↑</button>
+          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.UP}>↑</button>
           <div />
-          <button 
-            className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center"
-            onTouchStart={() => pacmanRef.current.nextDir = Direction.LEFT}
-          >←</button>
-          <button 
-            className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center"
-            onTouchStart={() => pacmanRef.current.nextDir = Direction.DOWN}
-          >↓</button>
-          <button 
-            className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center"
-            onTouchStart={() => pacmanRef.current.nextDir = Direction.RIGHT}
-          >→</button>
+          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.LEFT}>←</button>
+          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.DOWN}>↓</button>
+          <button className="w-12 h-12 bg-gray-800 rounded-lg flex items-center justify-center" onTouchStart={() => pacmanRef.current.nextDir = Direction.RIGHT}>→</button>
         </div>
       </div>
     </div>
