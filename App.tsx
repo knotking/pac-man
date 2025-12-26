@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Direction, 
@@ -42,6 +43,9 @@ const App: React.FC = () => {
   const [musicTrack, setMusicTrack] = useState<MusicTrack>(MusicTrack.RETRO);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const powerPelletsRef = useRef<Position[]>([]);
+  
   const pacmanRef = useRef<Entity>({
     pos: { x: 13.5 * TILE_SIZE, y: 23 * TILE_SIZE },
     dir: Direction.NONE,
@@ -57,6 +61,54 @@ const App: React.FC = () => {
   // Death and Invincibility Timers
   const deathTimerRef = useRef<number>(0);
   const invincibilityTimerRef = useRef<number>(0);
+
+  // Initialize offscreen background canvas
+  useEffect(() => {
+    const bgCanvas = document.createElement('canvas');
+    bgCanvas.width = GRID_WIDTH * TILE_SIZE;
+    bgCanvas.height = GRID_HEIGHT * TILE_SIZE;
+    bgCanvasRef.current = bgCanvas;
+  }, []);
+
+  const renderBackground = useCallback(() => {
+    const canvas = bgCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const powerPellets: Position[] = [];
+
+    mazeRef.current.forEach((row, y) => {
+      row.forEach((tile, x) => {
+        if (tile === TileType.WALL) {
+          ctx.fillStyle = '#2121ff';
+          ctx.fillRect(x * TILE_SIZE + 2, y * TILE_SIZE + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+        } else if (tile === TileType.PELLET) {
+          ctx.fillStyle = '#ffb8ae';
+          ctx.beginPath();
+          ctx.arc(x * TILE_SIZE + TILE_SIZE / 2, y * TILE_SIZE + TILE_SIZE / 2, 2, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (tile === TileType.POWER_PELLET) {
+          powerPellets.push({ x, y });
+        }
+      });
+    });
+    powerPelletsRef.current = powerPellets;
+  }, []);
+
+  const updateBackgroundTile = (gridX: number, gridY: number) => {
+    const canvas = bgCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Clear tile to background color
+    ctx.fillStyle = '#000';
+    ctx.fillRect(gridX * TILE_SIZE, gridY * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+  };
 
   const initGhosts = useCallback((level: number) => {
     const speed = 1.5 + (level - 1) * 0.2;
@@ -83,6 +135,7 @@ const App: React.FC = () => {
 
   const startGame = () => {
     mazeRef.current = MAZE_LAYOUT.map(row => [...row]);
+    renderBackground();
     setGameState({
       score: 0,
       lives: INITIAL_LIVES,
@@ -101,6 +154,7 @@ const App: React.FC = () => {
     setGameState(prev => {
       const nextLevel = prev.level + 1;
       mazeRef.current = MAZE_LAYOUT.map(row => [...row]);
+      renderBackground();
       resetEntities(nextLevel);
       audioService.playStartFanfare();
       audioService.startBackgroundMusic();
@@ -112,7 +166,7 @@ const App: React.FC = () => {
         powerTimer: 0 
       };
     });
-  }, [resetEntities]);
+  }, [resetEntities, renderBackground]);
 
   // Audio Control Handlers
   const handleToggleSfx = () => {
@@ -238,7 +292,10 @@ const App: React.FC = () => {
 
       if (tile === TileType.PELLET || tile === TileType.POWER_PELLET) {
         mazeRef.current[gridY][gridX] = TileType.EMPTY;
-        if (tile === TileType.POWER_PELLET) {
+        
+        if (tile === TileType.PELLET) {
+          updateBackgroundTile(gridX, gridY);
+        } else if (tile === TileType.POWER_PELLET) {
           audioService.playPowerPellet();
           audioService.startBackgroundMusic(true);
         }
@@ -265,7 +322,6 @@ const App: React.FC = () => {
     }
 
     ghostsRef.current.forEach(ghost => {
-      // Simple random ghost movement
       if (!checkCollision(ghost.pos, ghost.dir) && Math.random() > 0.05) {
         ghost.pos = getNextPos(ghost.pos, ghost.dir, ghost.isFrightened ? ghost.speed * 0.5 : ghost.speed);
       } else {
@@ -303,32 +359,30 @@ const App: React.FC = () => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // 1. Clear main dynamic canvas
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    mazeRef.current.forEach((row, y) => {
-      row.forEach((tile, x) => {
-        if (tile === TileType.WALL) {
-          ctx.fillStyle = '#2121ff';
-          ctx.fillRect(x * TILE_SIZE + 2, y * TILE_SIZE + 2, TILE_SIZE - 4, TILE_SIZE - 4);
-        } else if (tile === TileType.PELLET) {
-          ctx.fillStyle = '#ffb8ae';
+    // 2. Draw static cached background (walls and regular pellets)
+    if (bgCanvasRef.current) {
+      ctx.drawImage(bgCanvasRef.current, 0, 0);
+    }
+
+    // 3. Draw blinking power pellets
+    const isBlinkFrame = Math.floor(Date.now() / 200) % 2 === 0;
+    if (isBlinkFrame) {
+      ctx.fillStyle = '#ffb8ae';
+      powerPelletsRef.current.forEach(p => {
+        if (mazeRef.current[p.y][p.x] === TileType.POWER_PELLET) {
           ctx.beginPath();
-          ctx.arc(x * TILE_SIZE + TILE_SIZE / 2, y * TILE_SIZE + TILE_SIZE / 2, 2, 0, Math.PI * 2);
+          ctx.arc(p.x * TILE_SIZE + TILE_SIZE / 2, p.y * TILE_SIZE + TILE_SIZE / 2, 8, 0, Math.PI * 2);
           ctx.fill();
-        } else if (tile === TileType.POWER_PELLET) {
-          if (Math.floor(Date.now() / 200) % 2 === 0) {
-            ctx.fillStyle = '#ffb8ae';
-            ctx.beginPath();
-            ctx.arc(x * TILE_SIZE + TILE_SIZE / 2, y * TILE_SIZE + TILE_SIZE / 2, 8, 0, Math.PI * 2);
-            ctx.fill();
-          }
         }
       });
-    });
+    }
 
+    // 4. Draw Pac-Man
     const pac = pacmanRef.current;
-    
     if (gameState.status === GameStatus.DYING) {
       const progress = (90 - deathTimerRef.current) / 90; 
       ctx.fillStyle = '#ffff00';
@@ -356,6 +410,7 @@ const App: React.FC = () => {
       }
     }
 
+    // 5. Draw Ghosts
     ghostsRef.current.forEach(ghost => {
       if (ghost.isEaten) return;
       ctx.fillStyle = ghost.isFrightened ? '#2121ff' : ghost.color;
@@ -376,7 +431,7 @@ const App: React.FC = () => {
     const loop = () => { update(); draw(); frameId.current = requestAnimationFrame(loop); };
     frameId.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frameId.current);
-  }, [gameState.status, draw, gameState.level]);
+  }, [gameState.status, draw]);
 
   return (
     <div className="min-h-screen bg-black flex flex-col items-center justify-center p-4 text-white font-['Press_Start_2P']" onKeyDown={handleKeyDown} tabIndex={0}>
