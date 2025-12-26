@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Direction, 
@@ -40,7 +39,7 @@ const App: React.FC = () => {
   const [sfxEnabled, setSfxEnabled] = useState(true);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [audioProfile, setAudioProfile] = useState<SoundProfile>(SoundProfile.CLASSIC);
-  const [musicTrack, setMusicTrack] = useState<MusicTrack>(MusicTrack.DRONE);
+  const [musicTrack, setMusicTrack] = useState<MusicTrack>(MusicTrack.RETRO);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pacmanRef = useRef<Entity>({
@@ -54,6 +53,10 @@ const App: React.FC = () => {
   const mazeRef = useRef<number[][]>(MAZE_LAYOUT.map(row => [...row]));
   const frameId = useRef<number>(0);
   const wakaCooldownRef = useRef<number>(0);
+  
+  // Death and Invincibility Timers
+  const deathTimerRef = useRef<number>(0);
+  const invincibilityTimerRef = useRef<number>(0);
 
   const initGhosts = useCallback((level: number) => {
     const speed = 1.5 + (level - 1) * 0.2;
@@ -122,7 +125,7 @@ const App: React.FC = () => {
     const next = !musicEnabled;
     setMusicEnabled(next);
     audioService.setMusicEnabled(next);
-    if (next && gameState.status === GameStatus.PLAYING) {
+    if (next && (gameState.status === GameStatus.PLAYING || gameState.status === GameStatus.DYING)) {
       audioService.startBackgroundMusic(gameState.powerTimer > 0);
     }
   };
@@ -135,7 +138,7 @@ const App: React.FC = () => {
   const handleChangeTrack = (t: MusicTrack) => {
     setMusicTrack(t);
     audioService.setTrack(t);
-    if (musicEnabled && gameState.status === GameStatus.PLAYING) {
+    if (musicEnabled && (gameState.status === GameStatus.PLAYING || gameState.status === GameStatus.DYING)) {
       audioService.startBackgroundMusic(gameState.powerTimer > 0);
     }
   };
@@ -164,7 +167,8 @@ const App: React.FC = () => {
     const gridX = Math.floor(x / TILE_SIZE);
     const gridY = Math.floor(y / TILE_SIZE);
     if (gridX < 0 || gridX >= GRID_WIDTH || gridY < 0 || gridY >= GRID_HEIGHT) return false;
-    return mazeRef.current[gridY][gridX] === TileType.WALL;
+    const tile = mazeRef.current[gridY][gridX];
+    return tile === TileType.WALL || tile === TileType.GHOST_HOUSE;
   };
 
   const getNextPos = (pos: Position, dir: Direction, speed: number): Position => {
@@ -189,7 +193,29 @@ const App: React.FC = () => {
   };
 
   const update = () => {
+    if (gameState.status === GameStatus.DYING) {
+      deathTimerRef.current--;
+      if (deathTimerRef.current <= 0) {
+        setGameState(prev => {
+          if (prev.lives > 1) {
+            resetEntities(prev.level);
+            invincibilityTimerRef.current = 180; // 3 seconds
+            setTimeout(() => { 
+                if (gameState.status === GameStatus.PLAYING) audioService.startBackgroundMusic(); 
+            }, 500);
+            return { ...prev, lives: prev.lives - 1, status: GameStatus.PLAYING };
+          } else {
+            fetchCommentary(prev.score, prev.level, 'GAME_OVER');
+            return { ...prev, lives: 0, status: GameStatus.GAME_OVER };
+          }
+        });
+      }
+      return;
+    }
+
     if (gameState.status !== GameStatus.PLAYING) return;
+
+    if (invincibilityTimerRef.current > 0) invincibilityTimerRef.current--;
 
     const pac = pacmanRef.current;
     if (pac.nextDir !== Direction.NONE && !checkCollision(pac.pos, pac.nextDir)) {
@@ -207,38 +233,39 @@ const App: React.FC = () => {
 
     const gridX = Math.floor((pac.pos.x + TILE_SIZE / 2) / TILE_SIZE);
     const gridY = Math.floor((pac.pos.y + TILE_SIZE / 2) / TILE_SIZE);
-    if (gridY < 0 || gridY >= GRID_HEIGHT || gridX < 0 || gridX >= GRID_WIDTH) return;
+    if (gridY >= 0 && gridY < GRID_HEIGHT && gridX >= 0 && gridX < GRID_WIDTH) {
+      const tile = mazeRef.current[gridY][gridX];
 
-    const tile = mazeRef.current[gridY][gridX];
-
-    if (tile === TileType.PELLET || tile === TileType.POWER_PELLET) {
-      mazeRef.current[gridY][gridX] = TileType.EMPTY;
-      if (tile === TileType.POWER_PELLET) {
-        audioService.playPowerPellet();
-        audioService.startBackgroundMusic(true);
-      }
-
-      setGameState(prev => {
-        const newScore = prev.score + (tile === TileType.PELLET ? 10 : 50);
-        const duration = Math.max(120, POWER_PELLET_DURATION - (prev.level - 1) * 60);
-        const newPowerTimer = tile === TileType.POWER_PELLET ? duration : Math.max(0, prev.powerTimer - 1);
+      if (tile === TileType.PELLET || tile === TileType.POWER_PELLET) {
+        mazeRef.current[gridY][gridX] = TileType.EMPTY;
         if (tile === TileType.POWER_PELLET) {
-          ghostsRef.current.forEach(g => { if (!g.isEaten) g.isFrightened = true; });
+          audioService.playPowerPellet();
+          audioService.startBackgroundMusic(true);
         }
-        return { ...prev, score: newScore, powerTimer: newPowerTimer };
-      });
-    } else {
-      setGameState(prev => {
-        const nextPowerTimer = Math.max(0, prev.powerTimer - 1);
-        if (prev.powerTimer > 0 && nextPowerTimer === 0) {
-          audioService.startBackgroundMusic(false);
-          ghostsRef.current.forEach(g => { g.isFrightened = false; g.isEaten = false; });
-        }
-        return { ...prev, powerTimer: nextPowerTimer };
-      });
+
+        setGameState(prev => {
+          const newScore = prev.score + (tile === TileType.PELLET ? 10 : 50);
+          const duration = Math.max(120, POWER_PELLET_DURATION - (prev.level - 1) * 60);
+          const newPowerTimer = tile === TileType.POWER_PELLET ? duration : Math.max(0, prev.powerTimer - 1);
+          if (tile === TileType.POWER_PELLET) {
+            ghostsRef.current.forEach(g => { if (!g.isEaten) g.isFrightened = true; });
+          }
+          return { ...prev, score: newScore, powerTimer: newPowerTimer };
+        });
+      } else {
+        setGameState(prev => {
+          const nextPowerTimer = Math.max(0, prev.powerTimer - 1);
+          if (prev.powerTimer > 0 && nextPowerTimer === 0) {
+            audioService.startBackgroundMusic(false);
+            ghostsRef.current.forEach(g => { g.isFrightened = false; g.isEaten = false; });
+          }
+          return { ...prev, powerTimer: nextPowerTimer };
+        });
+      }
     }
 
     ghostsRef.current.forEach(ghost => {
+      // Simple random ghost movement
       if (!checkCollision(ghost.pos, ghost.dir) && Math.random() > 0.05) {
         ghost.pos = getNextPos(ghost.pos, ghost.dir, ghost.isFrightened ? ghost.speed * 0.5 : ghost.speed);
       } else {
@@ -253,25 +280,17 @@ const App: React.FC = () => {
           ghost.isEaten = true;
           audioService.playGhostEaten();
           setGameState(prev => ({ ...prev, score: prev.score + 200 }));
-        } else if (!ghost.isEaten) {
+        } else if (!ghost.isEaten && invincibilityTimerRef.current === 0) {
           audioService.playDeath();
           audioService.stopBackgroundMusic();
-          setGameState(prev => {
-            if (prev.lives > 1) {
-              resetEntities(prev.level);
-              setTimeout(() => { if (gameState.status === GameStatus.PLAYING) audioService.startBackgroundMusic(); }, 1500);
-              return { ...prev, lives: prev.lives - 1 };
-            } else {
-              fetchCommentary(prev.score, prev.level, 'GAME_OVER');
-              return { ...prev, lives: 0, status: GameStatus.GAME_OVER };
-            }
-          });
+          deathTimerRef.current = 90; 
+          setGameState(prev => ({ ...prev, status: GameStatus.DYING }));
         }
       }
     });
 
     const pelletsCount = mazeRef.current.flat().filter(t => t === TileType.PELLET || t === TileType.POWER_PELLET).length;
-    if (pelletsCount === 0) {
+    if (pelletsCount === 0 && gameState.status === GameStatus.PLAYING) {
       audioService.stopBackgroundMusic();
       setGameState(prev => ({ ...prev, status: GameStatus.WON }));
       setTimeout(() => { startNextLevel(); }, 2000);
@@ -309,17 +328,33 @@ const App: React.FC = () => {
     });
 
     const pac = pacmanRef.current;
-    ctx.fillStyle = '#ffff00';
-    ctx.beginPath();
-    let startAngle = 0.2 * Math.PI;
-    let endAngle = 1.8 * Math.PI;
-    if (pac.dir === Direction.UP) { startAngle = 1.7 * Math.PI; endAngle = 1.3 * Math.PI; }
-    if (pac.dir === Direction.DOWN) { startAngle = 0.7 * Math.PI; endAngle = 0.3 * Math.PI; }
-    if (pac.dir === Direction.LEFT) { startAngle = 1.2 * Math.PI; endAngle = 0.8 * Math.PI; }
-    const mouthOpen = (Math.sin(Date.now() / 50) + 1) / 2;
-    ctx.arc(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2, TILE_SIZE / 2 - 2, startAngle * mouthOpen, endAngle + (2 * Math.PI - endAngle) * (1 - mouthOpen));
-    ctx.lineTo(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2);
-    ctx.fill();
+    
+    if (gameState.status === GameStatus.DYING) {
+      const progress = (90 - deathTimerRef.current) / 90; 
+      ctx.fillStyle = '#ffff00';
+      ctx.beginPath();
+      const angle = progress * Math.PI;
+      ctx.arc(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2, Math.max(0, (TILE_SIZE / 2 - 2) * (1 - progress)), angle, 2 * Math.PI - angle);
+      ctx.lineTo(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2);
+      ctx.fill();
+    } else {
+      const isInvincible = invincibilityTimerRef.current > 0;
+      const shouldShow = !isInvincible || Math.floor(Date.now() / 100) % 2 === 0;
+
+      if (shouldShow) {
+        ctx.fillStyle = '#ffff00';
+        ctx.beginPath();
+        let startAngle = 0.2 * Math.PI;
+        let endAngle = 1.8 * Math.PI;
+        if (pac.dir === Direction.UP) { startAngle = 1.7 * Math.PI; endAngle = 1.3 * Math.PI; }
+        if (pac.dir === Direction.DOWN) { startAngle = 0.7 * Math.PI; endAngle = 0.3 * Math.PI; }
+        if (pac.dir === Direction.LEFT) { startAngle = 1.2 * Math.PI; endAngle = 0.8 * Math.PI; }
+        const mouthOpen = (Math.sin(Date.now() / 50) + 1) / 2;
+        ctx.arc(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2, TILE_SIZE / 2 - 2, startAngle * mouthOpen, endAngle + (2 * Math.PI - endAngle) * (1 - mouthOpen));
+        ctx.lineTo(pac.pos.x + TILE_SIZE / 2, pac.pos.y + TILE_SIZE / 2);
+        ctx.fill();
+      }
+    }
 
     ghostsRef.current.forEach(ghost => {
       if (ghost.isEaten) return;
@@ -335,7 +370,7 @@ const App: React.FC = () => {
       ctx.arc(ghost.pos.x + TILE_SIZE * 0.7, ghost.pos.y + TILE_SIZE * 0.3, 3, 0, Math.PI * 2);
       ctx.fill();
     });
-  }, [gameState.powerTimer]);
+  }, [gameState.status, gameState.powerTimer]);
 
   useEffect(() => {
     const loop = () => { update(); draw(); frameId.current = requestAnimationFrame(loop); };
@@ -347,38 +382,28 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-black flex flex-col items-center justify-center p-4 text-white font-['Press_Start_2P']" onKeyDown={handleKeyDown} tabIndex={0}>
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-8 items-start">
         
-        {/* Left Column: Stats & Audio Toggles */}
+        {/* Left Column: Stats & Audio Mix */}
         <div className="flex flex-col gap-6 order-2 lg:order-1">
           <div className="retro-border p-4 bg-gray-900 rounded-lg text-center">
-            <h2 className="text-yellow-400 text-sm mb-4">LEVEL</h2>
-            <p className="text-3xl text-white">{gameState.level}</p>
+            <h2 className="text-yellow-400 text-[10px] mb-4">LEVEL</h2>
+            <p className="text-2xl text-white">{gameState.level}</p>
           </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-yellow-400 text-sm mb-4">SCORE</h2>
-            <p className="text-2xl">{gameState.score.toString().padStart(6, '0')}</p>
+            <h2 className="text-yellow-400 text-[10px] mb-4">SCORE</h2>
+            <p className="text-xl">{gameState.score.toString().padStart(6, '0')}</p>
           </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-red-500 text-sm mb-4">AUDIO MIXER</h2>
+            <h2 className="text-red-500 text-[10px] mb-4">AUDIO MIXER</h2>
             <div className="flex flex-col gap-3">
-              <button 
-                onClick={handleToggleSfx} 
-                className={`text-[10px] p-2 rounded border transition-colors ${sfxEnabled ? 'bg-green-900 border-green-500' : 'bg-red-900 border-red-500'}`}
-              >
-                SFX: {sfxEnabled ? 'ON' : 'OFF'}
-              </button>
-              <button 
-                onClick={handleToggleMusic} 
-                className={`text-[10px] p-2 rounded border transition-colors ${musicEnabled ? 'bg-green-900 border-green-500' : 'bg-red-900 border-red-500'}`}
-              >
-                MUSIC: {musicEnabled ? 'ON' : 'OFF'}
-              </button>
+              <button onClick={handleToggleSfx} className={`text-[8px] p-2 rounded border transition-colors ${sfxEnabled ? 'bg-green-900 border-green-500' : 'bg-red-900 border-red-500'}`}>SFX: {sfxEnabled ? 'ON' : 'OFF'}</button>
+              <button onClick={handleToggleMusic} className={`text-[8px] p-2 rounded border transition-colors ${musicEnabled ? 'bg-green-900 border-green-500' : 'bg-red-900 border-red-500'}`}>MUSIC: {musicEnabled ? 'ON' : 'OFF'}</button>
             </div>
           </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-red-500 text-sm mb-4">LIVES</h2>
+            <h2 className="text-red-500 text-[10px] mb-4">LIVES</h2>
             <div className="flex gap-2">
               {Array.from({ length: gameState.lives }).map((_, i) => (
-                <div key={i} className="w-6 h-6 bg-yellow-400 rounded-full"></div>
+                <div key={i} className="w-5 h-5 bg-yellow-400 rounded-full"></div>
               ))}
             </div>
           </div>
@@ -386,26 +411,26 @@ const App: React.FC = () => {
 
         {/* Center Column: Game */}
         <div className="flex flex-col items-center order-1 lg:order-2">
-          <h1 className="text-3xl text-yellow-400 mb-6 drop-shadow-[0_0_10px_rgba(255,255,0,0.8)]">PAC-MAN</h1>
+          <h1 className="text-2xl text-yellow-400 mb-6 drop-shadow-[0_0_10px_rgba(255,255,0,0.8)]">PAC-MAN</h1>
           <div className="relative retro-border overflow-hidden rounded-md bg-black shadow-2xl">
             <canvas ref={canvasRef} width={GRID_WIDTH * TILE_SIZE} height={GRID_HEIGHT * TILE_SIZE} className="max-w-full h-auto" />
             {gameState.status === GameStatus.IDLE && (
               <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center">
-                <p className="mb-8 text-yellow-400 animate-pulse text-xs">CLICK TO START GAME</p>
-                <button onClick={startGame} className="bg-yellow-400 text-black px-8 py-4 hover:bg-yellow-300 active:translate-y-1 transition-all">START GAME</button>
+                <p className="mb-8 text-yellow-400 animate-pulse text-[10px]">CLICK TO START GAME</p>
+                <button onClick={startGame} className="bg-yellow-400 text-black px-6 py-3 hover:bg-yellow-300 active:translate-y-1 transition-all text-[10px]">START GAME</button>
               </div>
             )}
             {gameState.status === GameStatus.WON && (
               <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center p-8 text-center">
-                <p className="text-2xl mb-4 text-green-500 animate-bounce">LEVEL CLEAR!</p>
-                <p className="text-xs text-white">GET READY FOR LEVEL {gameState.level + 1}</p>
+                <p className="text-xl mb-4 text-green-500 animate-bounce">LEVEL CLEAR!</p>
+                <p className="text-[10px] text-white">GET READY FOR LEVEL {gameState.level + 1}</p>
               </div>
             )}
             {gameState.status === GameStatus.GAME_OVER && (
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-8 text-center">
-                <p className="text-2xl mb-4 text-red-500">GAME OVER</p>
-                <p className="text-[10px] mb-8 leading-relaxed text-gray-400 max-w-xs mx-auto">{isAiLoading ? "..." : aiMessage}</p>
-                <button onClick={startGame} className="bg-yellow-400 text-black px-8 py-4 hover:bg-yellow-300">REPLAY</button>
+                <p className="text-xl mb-4 text-red-500">GAME OVER</p>
+                <p className="text-[8px] mb-8 leading-relaxed text-gray-400 max-w-xs mx-auto">{isAiLoading ? "..." : aiMessage}</p>
+                <button onClick={startGame} className="bg-yellow-400 text-black px-6 py-3 hover:bg-yellow-300 text-[10px]">REPLAY</button>
               </div>
             )}
           </div>
@@ -414,36 +439,29 @@ const App: React.FC = () => {
         {/* Right Column: AI & Sound Picker */}
         <div className="flex flex-col gap-6 order-3">
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-cyan-400 text-sm mb-4 uppercase">Sound Profile</h2>
+            <h2 className="text-cyan-400 text-[10px] mb-4 uppercase">Sound Type</h2>
             <div className="grid grid-cols-1 gap-2">
               {[SoundProfile.CLASSIC, SoundProfile.SMOOTH, SoundProfile.AGGRESSIVE].map(p => (
-                <button 
-                  key={p} 
-                  onClick={() => handleChangeProfile(p)}
-                  className={`text-[8px] p-2 border ${audioProfile === p ? 'bg-cyan-900 border-cyan-400 text-white' : 'border-gray-600 text-gray-500'}`}
-                >
-                  {p}
-                </button>
+                <button key={p} onClick={() => handleChangeProfile(p)} className={`text-[8px] p-2 border ${audioProfile === p ? 'bg-cyan-900 border-cyan-400 text-white' : 'border-gray-600 text-gray-500'}`}>{p}</button>
               ))}
             </div>
           </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-pink-400 text-sm mb-4 uppercase">Background Tune</h2>
+            <h2 className="text-pink-400 text-[10px] mb-4 uppercase">Music Genre</h2>
             <div className="grid grid-cols-1 gap-2">
-              {[MusicTrack.DRONE, MusicTrack.PULSE, MusicTrack.CHASE].map(t => (
-                <button 
-                  key={t} 
-                  onClick={() => handleChangeTrack(t)}
-                  className={`text-[8px] p-2 border ${musicTrack === t ? 'bg-pink-900 border-pink-400 text-white' : 'border-gray-600 text-gray-500'}`}
-                >
-                  {t}
-                </button>
+              {[MusicTrack.RETRO, MusicTrack.ROCK, MusicTrack.TECHNO, MusicTrack.LOFI].map(t => (
+                <button key={t} onClick={() => handleChangeTrack(t)} className={`text-[8px] p-2 border ${musicTrack === t ? 'bg-pink-900 border-pink-400 text-white' : 'border-gray-600 text-gray-500'}`}>{t}</button>
               ))}
             </div>
           </div>
           <div className="retro-border p-4 bg-gray-900 rounded-lg">
-            <h2 className="text-white text-sm mb-4">GEMINI COMMS</h2>
-            <p className="text-[10px] leading-6 text-pink-200">{aiMessage}</p>
+            <h2 className="text-white text-[10px] mb-4">GEMINI COMMS</h2>
+            <div className="border-l-2 border-pink-500 pl-3">
+              <p className="text-[8px] leading-relaxed text-pink-200">{aiMessage}</p>
+            </div>
+            <div className="mt-4 border-t border-gray-700 pt-3">
+               <p className="text-[8px] leading-relaxed text-cyan-300 italic">TIP: {tipMessage}</p>
+            </div>
           </div>
         </div>
       </div>

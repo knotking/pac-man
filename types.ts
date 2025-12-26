@@ -11,6 +11,7 @@ export enum GameStatus {
   IDLE = 'IDLE',
   PLAYING = 'PLAYING',
   PAUSED = 'PAUSED',
+  DYING = 'DYING',
   WON = 'WON',
   GAME_OVER = 'GAME_OVER'
 }
@@ -30,9 +31,10 @@ export enum SoundProfile {
 }
 
 export enum MusicTrack {
-  DRONE = 'DRONE',
-  PULSE = 'PULSE',
-  CHASE = 'CHASE'
+  RETRO = 'RETRO',
+  ROCK = 'ROCK',
+  TECHNO = 'TECHNO',
+  LOFI = 'LOFI'
 }
 
 export interface Position {

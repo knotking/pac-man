@@ -6,9 +6,9 @@ class AudioService {
   private sfxEnabled: boolean = true;
   private musicEnabled: boolean = true;
   private currentProfile: SoundProfile = SoundProfile.CLASSIC;
-  private currentTrack: MusicTrack = MusicTrack.DRONE;
-  private backgroundOscillator: OscillatorNode | null = null;
-  private backgroundGain: GainNode | null = null;
+  private currentTrack: MusicTrack = MusicTrack.RETRO;
+  private backgroundInterval: number | null = null;
+  private isFrightenedMode: boolean = false;
 
   private init() {
     if (!this.ctx) {
@@ -132,35 +132,73 @@ class AudioService {
     if (!this.musicEnabled) return;
     this.init();
     this.stopBackgroundMusic();
+    this.isFrightenedMode = isFrightened;
 
     const ctx = this.ctx!;
-    this.backgroundOscillator = ctx.createOscillator();
-    this.backgroundGain = ctx.createGain();
+    let beat = 0;
+    const tempo = isFrightened ? 150 : 300; // Faster when ghosts are scared
 
-    let freq = 70;
-    if (this.currentTrack === MusicTrack.PULSE) freq = 140;
-    if (this.currentTrack === MusicTrack.CHASE) freq = 220;
-    
-    if (isFrightened) freq *= 1.5;
+    this.backgroundInterval = window.setInterval(() => {
+      this.playGenreBeat(beat++);
+    }, tempo);
+  }
 
-    this.backgroundOscillator.type = this.currentProfile === SoundProfile.AGGRESSIVE ? 'sawtooth' : 'triangle';
-    this.backgroundOscillator.frequency.setValueAtTime(freq, ctx.currentTime);
+  private playGenreBeat(beat: number) {
+    if (!this.ctx || !this.musicEnabled) return;
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
     
-    // Add subtle rhythm
-    this.backgroundGain.gain.setValueAtTime(0.03, ctx.currentTime);
-    
-    this.backgroundOscillator.connect(this.backgroundGain);
-    this.backgroundGain.connect(ctx.destination);
-    
-    this.backgroundOscillator.start();
+    let freq = 60;
+    let type: OscillatorType = 'triangle';
+    let duration = 0.1;
+
+    switch (this.currentTrack) {
+      case MusicTrack.ROCK:
+        type = 'sawtooth';
+        // Power chord progression A - D - E - A
+        const rockNotes = [110, 110, 146, 146, 164, 164, 110, 220];
+        freq = rockNotes[beat % rockNotes.length];
+        duration = 0.15;
+        break;
+      case MusicTrack.TECHNO:
+        type = 'square';
+        // Fast pulsing beat
+        freq = (beat % 4 === 0) ? 50 : 150;
+        if (beat % 8 === 7) freq = 300;
+        duration = 0.05;
+        break;
+      case MusicTrack.LOFI:
+        type = 'sine';
+        // Chill minor seventh progression
+        const lofiNotes = [196, 233, 293, 349]; // Gm7
+        freq = lofiNotes[Math.floor(beat / 4) % lofiNotes.length];
+        duration = 0.8;
+        break;
+      default: // RETRO
+        type = 'triangle';
+        freq = (beat % 4 === 0) ? 60 : 80;
+        duration = 0.1;
+        break;
+    }
+
+    if (this.isFrightenedMode) freq *= 1.5;
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    gain.gain.setValueAtTime(0.02, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + duration);
   }
 
   stopBackgroundMusic() {
-    if (this.backgroundOscillator) {
-      try {
-        this.backgroundOscillator.stop();
-      } catch (e) {}
-      this.backgroundOscillator = null;
+    if (this.backgroundInterval) {
+      clearInterval(this.backgroundInterval);
+      this.backgroundInterval = null;
     }
   }
 
